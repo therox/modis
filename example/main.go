@@ -15,9 +15,9 @@ func main() {
 		fmt.Printf("Error in initializing client: %s", err)
 	}
 
-	modisScenes, err := c.GetModisScenes(time.Now().Add(-time.Hour*24*12), time.Now())
+	modisScenes, err := c.GetModisScenes(time.Now().Add(-time.Hour*24*20), time.Now())
 	if err != nil {
-		fmt.Printf("Error getting modis scenes: %s", err)
+		fmt.Printf("Error getting modis scenes:\n%s", err)
 	}
 
 	fmt.Printf("Got %d scenes", len(modisScenes))

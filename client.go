@@ -15,6 +15,24 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
+type ErrScene struct {
+	url string
+	err error
+}
+type ErrScenes struct {
+	errs []ErrScene
+}
+
+func (e *ErrScenes) Error() string {
+	s := strings.Builder{}
+	for _, err := range e.errs {
+		if err.err != nil {
+			s.WriteString(err.url + ": " + err.err.Error() + "\n")
+		}
+	}
+	return s.String()
+}
+
 type Client struct {
 	modisToken   string
 	httpClient   *http.Client
@@ -36,6 +54,10 @@ func NewClient(modisToken string) (*Client, error) {
 }
 
 func (c *Client) GetModisScenes(startDate time.Time, endDate time.Time) ([]ModisScene, error) {
+	if endDate.After(time.Now()) {
+		endDate = time.Now()
+	}
+	var msErr = new(ErrScenes)
 	if startDate.After(endDate) {
 		return nil, errors.New("startDate is after endDate")
 	}
@@ -57,16 +79,21 @@ func (c *Client) GetModisScenes(startDate time.Time, endDate time.Time) ([]Modis
 			log.Debugf("Downloading %v from %s", platformType, dlURL)
 			content, err := c.getData(dlURL, false)
 			if err != nil {
+				msErr.errs = append(msErr.errs, ErrScene{dlURL, fmt.Errorf("error getting data: %s", err)})
 				continue
 			}
 			mdScenes, err := parseModisData(content, platformType, false)
 			if err != nil {
-				return nil, err
+				msErr.errs = append(msErr.errs, ErrScene{dlURL, fmt.Errorf("error parsing data: %s", err)})
+				continue
 			}
 			res = append(res, mdScenes...)
+			msErr.errs = append(msErr.errs, ErrScene{dlURL, nil})
 		}
 	}
-
+	if len(msErr.errs) > 0 {
+		return res, msErr
+	}
 	return res, nil
 }
 
@@ -111,18 +138,18 @@ func (c *Client) getData(downloadURL string, download bool) ([]byte, error) {
 func parseModisData(data []byte, platformTypeID int, isArchive bool) ([]ModisScene, error) {
 	res := []ModisScene{}
 P:
-	for i, line := range strings.Split(string(data), "\n") {
+	for _, line := range strings.Split(string(data), "\n") {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
 		s := strings.Split(line, ",")
 		if len(s) != 17 {
-			log.Warningf("Line %d has %d fields, expected 17. Skipping.", i, len(s))
+			// log.Warningf("Line %d has %d fields, expected 17. Skipping.", i, len(s))
 			continue
 		}
 		sd, err := time.Parse("2006-01-02 15:04", s[1])
 		if err != nil {
-			log.Warningf("Line %d has invalid date %q. Skipping.", i, s[1])
+			// log.Warningf("Line %d has invalid date %q. Skipping.", i, s[1])
 			continue
 		}
 		// as, err := strconv.Atoi(s[2])
@@ -142,17 +169,12 @@ P:
 		// orbit := orbit
 		dayNightFlag := s[4]
 
-		//  lats = list(map(float, ln.split(",")[-4::]))[::-1]
-		// lons = list(map(float, ln.split(",")[-8:-4]))[::-1]
-		// lons.append(lons[0])
-		// lats.append(lats[0])
-
 		lats := []float64{}
 		// lats - last 4 fields from s in reversed order
 		for _, lat := range s[len(s)-4:] {
 			latf, err := strconv.ParseFloat(lat, 64)
 			if err != nil {
-				log.Warningf("Line %d has invalid lat. Skipping.", i)
+				// log.Warningf("Line %d has invalid lat. Skipping.", i)
 				continue P
 			}
 			lats = append(lats, latf)
@@ -167,7 +189,7 @@ P:
 		for _, lon := range s[len(s)-8 : len(s)-4] {
 			lonf, err := strconv.ParseFloat(lon, 64)
 			if err != nil {
-				log.Warningf("Line %d has invalid lon. Skipping.", i)
+				// log.Warningf("Line %d has invalid lon. Skipping.", i)
 				continue P
 			}
 			lons = append(lons, lonf)

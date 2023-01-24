@@ -6,7 +6,7 @@ const (
 )
 
 var (
-	platformURLs = map[string]map[string]map[int]map[string]string{
+	platformURLs = map[storageType]map[string]map[int]map[string]string{
 		"nrt": {
 			"meta": {
 				PlatformTerra: {

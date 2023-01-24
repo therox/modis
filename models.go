@@ -10,3 +10,19 @@ type ModisScene struct {
 	IsArchive           bool
 	ToLoad              bool
 }
+
+type ModisDataItem struct {
+	GranuleID          string
+	StartDateTime      time.Time
+	ArchiveSet         int
+	OrbitNumber        int64
+	DayNightFlag       string
+	EastBoundingCoord  float64
+	NorthBoundingCoord float64
+	SouthBoundingCoord float64
+	WestBoundingCoord  float64
+	ShapeWKT           string
+	IsArchive          bool
+}
+
+type ModisData []ModisDataItem

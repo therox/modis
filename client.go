@@ -19,16 +19,33 @@ type ErrScene struct {
 	url string
 	err error
 }
+
+type storageType string
+
+const (
+	storageTypeArchive storageType = "archive"
+	storageTypeNRT     storageType = "nrt"
+)
+
+func (e ErrScene) Error() string {
+	if e.err != nil {
+		return e.url + ": " + e.err.Error()
+	}
+	return e.url + ": <nil>"
+}
+
 type ErrScenes struct {
-	errs []ErrScene
+	Errors []error
 }
 
 func (e *ErrScenes) Error() string {
 	s := strings.Builder{}
-	for _, err := range e.errs {
-		if err.err != nil {
-			s.WriteString(err.url + ": " + err.err.Error() + "\n")
+	for _, err := range e.Errors {
+		if err != nil {
+			s.WriteString(err.Error() + "\n")
+			continue
 		}
+		s.WriteString(fmt.Sprintf("%v\n", err))
 	}
 	return s.String()
 }
@@ -53,7 +70,7 @@ func NewClient(modisToken string) (*Client, error) {
 	}, nil
 }
 
-func (c *Client) GetModisScenes(startDate time.Time, endDate time.Time) ([]ModisScene, error) {
+func (c *Client) GetModisScenes(startDate time.Time, endDate time.Time) (ModisData, error) {
 	if endDate.After(time.Now()) {
 		endDate = time.Now()
 	}
@@ -64,34 +81,36 @@ func (c *Client) GetModisScenes(startDate time.Time, endDate time.Time) ([]Modis
 	log.Debug("Searching for MODIS product...")
 
 	// get scenes from MODIS
-	res := []ModisScene{}
+	res := ModisData{}
+	noErrCount := 0
 	for _, platformType := range []int{PlatformTerra, PlatformAqua} {
 		for d := startDate; !d.After(endDate); d = d.AddDate(0, 0, 1) {
 
 			// For dates before now() - nrtValidDays, use archive data
-			storageType := "archive"
+			storageType := storageTypeArchive
 			if d.After(time.Now().AddDate(0, 0, -c.nrtValidDays)) {
 				// For dates after now() - nrtValidDays, use near real time data
-				storageType = "nrt"
+				storageType = storageTypeNRT
 			}
 
 			dlURL := fmt.Sprintf("%s%s", platformURLs[storageType]["meta"][platformType]["url"], timefmt.Format(d, platformURLs[storageType]["meta"][platformType]["txt_template"]))
 			log.Debugf("Downloading %v from %s", platformType, dlURL)
 			content, err := c.getData(dlURL, false)
 			if err != nil {
-				msErr.errs = append(msErr.errs, ErrScene{dlURL, fmt.Errorf("error getting data: %s", err)})
+				msErr.Errors = append(msErr.Errors, ErrScene{dlURL, fmt.Errorf("error getting data: %s", err)})
 				continue
 			}
-			mdScenes, err := parseModisData(content, platformType, false)
+			mdScenes, err := parseModisData(content, platformType, storageType == "archive")
 			if err != nil {
-				msErr.errs = append(msErr.errs, ErrScene{dlURL, fmt.Errorf("error parsing data: %s", err)})
+				msErr.Errors = append(msErr.Errors, ErrScene{dlURL, fmt.Errorf("error parsing data: %s", err)})
 				continue
 			}
 			res = append(res, mdScenes...)
-			msErr.errs = append(msErr.errs, ErrScene{dlURL, nil})
+			msErr.Errors = append(msErr.Errors, nil)
+			noErrCount++
 		}
 	}
-	if len(msErr.errs) > 0 {
+	if len(msErr.Errors) != noErrCount {
 		return res, msErr
 	}
 	return res, nil
@@ -135,46 +154,94 @@ func (c *Client) getData(downloadURL string, download bool) ([]byte, error) {
 	return bs, nil
 }
 
-func parseModisData(data []byte, platformTypeID int, isArchive bool) ([]ModisScene, error) {
-	res := []ModisScene{}
+type ParseErrors []error
+
+func (e ParseErrors) Error() string {
+	s := strings.Builder{}
+	for _, err := range e {
+		s.WriteString(err.Error() + "\n")
+	}
+	return s.String()
+}
+
+func parseModisData(data []byte, platformTypeID int, isArchive bool) (ModisData, error) {
+	res := make([]ModisDataItem, 0)
+	var pErrors ParseErrors
 P:
-	for _, line := range strings.Split(string(data), "\n") {
-		if strings.TrimSpace(line) == "" {
+	for i, line := range strings.Split(string(data), "\n") {
+		// fmt.Printf("[%d] > %+v\n", i+1, line)
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
+			// if strings.TrimSpace(line) == "" {
+			// skip header or comment
 			continue
 		}
 		s := strings.Split(line, ",")
 		if len(s) != 17 {
-			// log.Warningf("Line %d has %d fields, expected 17. Skipping.", i, len(s))
+			pErrors = append(pErrors, fmt.Errorf("line %d has %d fields, expected 17, skipping", i+1, len(s)))
 			continue
 		}
+		mdItem := ModisDataItem{
+			GranuleID: s[0],
+		}
+
 		sd, err := time.Parse("2006-01-02 15:04", s[1])
 		if err != nil {
-			// log.Warningf("Line %d has invalid date %q. Skipping.", i, s[1])
+			pErrors = append(pErrors, fmt.Errorf("line %d has invalid date %q, skipping", i+1, s[1]))
 			continue
 		}
-		// as, err := strconv.Atoi(s[2])
-		// if err != nil {
-		// 	log.Warning("Line %d has invalid archive set. Skipping.", i)
-		// 	continue
-		// }
-		// orbit, err := strconv.Atoi(s[3])
-		// if err != nil {
-		// 	log.Warning("Line %d has invalid orbit. Skipping.", i)
-		// 	continue
-		// }
+		mdItem.StartDateTime = sd
 
-		granuleID := s[0]
-		startDate := sd
-		// archiveSet := as
-		// orbit := orbit
-		dayNightFlag := s[4]
+		as, err := strconv.Atoi(s[2])
+		if err != nil {
+			pErrors = append(pErrors, fmt.Errorf("line %d has invalid archive set, skipping", i+1))
+			continue
+		}
+		mdItem.ArchiveSet = as
+
+		orbit, err := strconv.ParseInt(s[3], 10, 64)
+		if err != nil {
+			pErrors = append(pErrors, fmt.Errorf("line %d has invalid orbit, skipping", i+1))
+			continue
+		}
+		mdItem.OrbitNumber = orbit
+
+		if s[4] != "N" && s[4] != "D" && s[4] != "B" {
+			pErrors = append(pErrors, fmt.Errorf("line %d has invalid day/night flag %s, skipping", i+1, s[4]))
+			continue
+		}
+
+		mdItem.DayNightFlag = s[4]
+
+		// Bounding box
+		mdItem.EastBoundingCoord, err = strconv.ParseFloat(s[5], 64)
+		if err != nil {
+			pErrors = append(pErrors, fmt.Errorf("line %d has invalid east bounding coord, skipping", i+1))
+			continue
+		}
+		mdItem.NorthBoundingCoord, err = strconv.ParseFloat(s[6], 64)
+		if err != nil {
+			pErrors = append(pErrors, fmt.Errorf("line %d has invalid north bounding coord, skipping", i+1))
+			continue
+		}
+
+		mdItem.SouthBoundingCoord, err = strconv.ParseFloat(s[7], 64)
+		if err != nil {
+			pErrors = append(pErrors, fmt.Errorf("line %d has invalid south bounding coord, skipping", i+1))
+			continue
+		}
+
+		mdItem.WestBoundingCoord, err = strconv.ParseFloat(s[8], 64)
+		if err != nil {
+			pErrors = append(pErrors, fmt.Errorf("line %d has invalid west bounding coord, skipping", i+1))
+			continue
+		}
 
 		lats := []float64{}
 		// lats - last 4 fields from s in reversed order
 		for _, lat := range s[len(s)-4:] {
 			latf, err := strconv.ParseFloat(lat, 64)
 			if err != nil {
-				// log.Warningf("Line %d has invalid lat. Skipping.", i)
+				pErrors = append(pErrors, fmt.Errorf("line %d has invalid lat, skipping", i+1))
 				continue P
 			}
 			lats = append(lats, latf)
@@ -189,7 +256,7 @@ P:
 		for _, lon := range s[len(s)-8 : len(s)-4] {
 			lonf, err := strconv.ParseFloat(lon, 64)
 			if err != nil {
-				// log.Warningf("Line %d has invalid lon. Skipping.", i)
+				pErrors = append(pErrors, fmt.Errorf("line %d has invalid lon, skipping", i+1))
 				continue P
 			}
 			lons = append(lons, lonf)
@@ -202,25 +269,14 @@ P:
 		lats = append(lats, lats[0])
 		lons = append(lons, lons[0])
 
-		if Mean(lats) > 0 {
-			if dayNightFlag != "D" {
-				continue P
-			}
+		mdItem.ShapeWKT = fmt.Sprintf("POLYGON((%s))", strings.Join(wktCoordsWithPrecision(lons, lats, 13), ","))
+		mdItem.IsArchive = isArchive
 
-			// Make wkt from lons and lats with presision of 13 decimal places
-			wkt := fmt.Sprintf("POLYGON((%s))", strings.Join(wktCoordsWithPrecision(lons, lats, 13), ","))
+		res = append(res, mdItem)
+	}
 
-			ms := ModisScene{
-				ID:                  granuleID[6:19],
-				Datetime:            startDate,
-				Contour:             wkt,
-				ModisPlatformTypeID: platformTypeID,
-				IsArchive:           isArchive,
-				ToLoad:              false,
-			}
-
-			res = append(res, ms)
-		}
+	if len(pErrors) > 0 {
+		return res, pErrors
 	}
 
 	return res, nil

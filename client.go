@@ -15,17 +15,24 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-type ErrScene struct {
-	url string
-	err error
-}
-
 type storageType string
 
 const (
 	storageTypeArchive storageType = "archive"
 	storageTypeNRT     storageType = "nrt"
 )
+
+type Platform int
+
+const (
+	PlatformTerra Platform = iota + 1
+	PlatformAqua
+)
+
+type ErrScene struct {
+	url string
+	err error
+}
 
 func (e ErrScene) Error() string {
 	if e.err != nil {
@@ -83,7 +90,7 @@ func (c *Client) GetModisScenes(startDate time.Time, endDate time.Time) (ModisDa
 	// get scenes from MODIS
 	res := ModisData{}
 	noErrCount := 0
-	for _, platformType := range []int{PlatformTerra, PlatformAqua} {
+	for _, platformType := range []Platform{PlatformTerra, PlatformAqua} {
 		for d := startDate; !d.After(endDate); d = d.AddDate(0, 0, 1) {
 
 			// For dates before now() - nrtValidDays, use archive data
@@ -164,12 +171,12 @@ func (e ParseErrors) Error() string {
 	return s.String()
 }
 
-func parseModisData(data []byte, platformTypeID int, isArchive bool) (ModisData, error) {
+func parseModisData(data []byte, platformTypeID Platform, isArchive bool) (ModisData, error) {
 	res := make([]ModisDataItem, 0)
 	var pErrors ParseErrors
 P:
 	for i, line := range strings.Split(string(data), "\n") {
-		// fmt.Printf("[%d] > %+v\n", i+1, line)
+		fmt.Printf("[%d] > %+v\n", i+1, line)
 		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
 			// if strings.TrimSpace(line) == "" {
 			// skip header or comment

@@ -1,17 +1,22 @@
 package modis
 
-import "time"
+import (
+	"errors"
+	"strings"
+	"time"
+)
+
+// type ModisScene struct {
+// 	ID                  string
+// 	Datetime            time.Time
+// 	Contour             string
+// 	ModisPlatformTypeID Platform
+// 	IsArchive           bool
+// 	ToLoad              bool
+// }
 
 type ModisScene struct {
-	ID                  string
-	Datetime            time.Time
-	Contour             string
-	ModisPlatformTypeID int
-	IsArchive           bool
-	ToLoad              bool
-}
-
-type ModisDataItem struct {
+	ID                 string
 	GranuleID          string
 	StartDateTime      time.Time
 	ArchiveSet         int
@@ -21,8 +26,31 @@ type ModisDataItem struct {
 	NorthBoundingCoord float64
 	SouthBoundingCoord float64
 	WestBoundingCoord  float64
+	Platform           Platform
 	ShapeWKT           string
 	IsArchive          bool
 }
 
-type ModisData []ModisDataItem
+// func (mdi ModisDataItem) ModisScene() ModisScene {
+// 	p, _ := platform(mdi.GranuleID)
+// 	return ModisScene{
+// 		ID:                  strings.Join(strings.Split(mdi.GranuleID, ".")[:2], "."),
+// 		Datetime:            mdi.StartDateTime,
+// 		Contour:             mdi.ShapeWKT,
+// 		ModisPlatformTypeID: p,
+// 		IsArchive:           mdi.IsArchive,
+// 	}
+// }
+
+func platform(id string) (Platform, error) {
+	// Get platform from granule id
+	switch strings.Split(id, ".")[0] {
+	case "MOD03":
+		return PlatformTerra, nil
+	case "MYD03":
+		return PlatformAqua, nil
+	}
+	return PlatformTerra, errors.New("invalid platform")
+}
+
+type ModisData []ModisScene
